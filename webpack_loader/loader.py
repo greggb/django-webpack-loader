@@ -100,3 +100,55 @@ class WebpackLoader(object):
             "The stats file does not contain valid data. Make sure "
             "webpack-bundle-tracker plugin is enabled and try to run "
             "webpack again.")
+
+    def get_entry(self, entry_name):
+        assets = self.get_assets()
+
+        # poll when debugging and block request until bundle is compiled
+        # or the build times out
+        if settings.DEBUG:
+            timeout = self.config['TIMEOUT'] or 0
+            timed_out = False
+            start = time.time()
+            while assets['status'] == 'compiling' and not timed_out:
+                time.sleep(self.config['POLL_INTERVAL'])
+                if timeout and (time.time() - timeout > start):
+                    timed_out = True
+                assets = self.get_assets()
+
+            if timed_out:
+                raise WebpackLoaderTimeoutError(
+                    "Timed Out. Entrypoint `{0}` took more than {1} seconds "
+                    "to compile.".format(entry_name, timeout)
+                )
+
+        if assets.get('status') == 'done':
+            if 'entryPoints' in assets:
+                entry_files = assets['entryPoints'].get(entry_name, None)
+                if entry_files:
+                    entry_files_flat = [entry_point for sublist in entry_files for entry_point in sublist]
+                else:
+                    raise WebpackBundleLookupError('Cannot resolve entry {0}.'.format(entry_name))
+            else:
+                raise WebpackBundleLookupError('No entrypoints were found in the stats file. Make sure you '
+                                               'are using a supported version of webpack and double check '
+                                               'your webpack configuration.'.format(entry_name))
+
+            return self.filter_chunks(entry_files_flat)
+        elif assets.get('status') == 'error':
+            if 'file' not in assets:
+                assets['file'] = ''
+            if 'error' not in assets:
+                assets['error'] = 'Unknown Error'
+            if 'message' not in assets:
+                assets['message'] = ''
+            error = u"""
+            {error} in {file}
+            {message}
+            """.format(**assets)
+            raise WebpackError(error)
+
+        raise WebpackLoaderBadStatsError(
+            "The stats file does not contain valid data. Make sure "
+            "webpack-bundle-tracker plugin is enabled and try to run "
+            "webpack again.")
